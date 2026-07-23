@@ -203,7 +203,10 @@ export class AgentClient {
   }
 
   /**
-   * Send a request and wait for one of `expectTypes`, or an `error` with matching replyTo.
+   * Send a request and wait for a correlated reply.
+   * Prefers envelope `id` equal to the request id (server echoes id on replies).
+   * Falls back to type match for handlers that do not echo id yet (e.g. auth.ok).
+   * Errors match via `payload.replyTo === requestId`.
    */
   request(
     type: string,
@@ -221,20 +224,33 @@ export class AgentClient {
         reject(new Error(`请求超时：${type}`));
       }, timeoutMs);
 
+      const settle = (fn: () => void) => {
+        clearTimeout(timer);
+        unsub();
+        fn();
+      };
+
+      // Types that may not echo request id (legacy / one-shot auth).
+      const typeOnlyFallback = new Set(['auth.ok', 'auth.pair_result']);
+
       const unsub = this.on('*', (env) => {
-        if (expect.has(env.type)) {
-          clearTimeout(timer);
-          unsub();
-          resolve(env);
+        // Preferred: server echoes request id on the reply envelope
+        if (env.id === id && expect.has(env.type)) {
+          settle(() => resolve(env));
           return;
         }
         if (env.type === 'error') {
           const errPayload = env.payload as ErrorPayload;
-          if (errPayload.replyTo === id) {
-            clearTimeout(timer);
-            unsub();
-            reject(new Error(errPayload.message || errPayload.code || '协议错误'));
+          if (errPayload.replyTo === id || env.id === id) {
+            settle(() =>
+              reject(new Error(errPayload.message || errPayload.code || '协议错误')),
+            );
           }
+          return;
+        }
+        // Narrow type fallback only for auth replies that may not echo id
+        if (expect.has(env.type) && typeOnlyFallback.has(env.type)) {
+          settle(() => resolve(env));
         }
       });
     });

@@ -514,4 +514,51 @@ describe('runAgentLoop (mock Anthropic)', () => {
 
     expect(calls).toBe(1)
   })
+
+  it('aborts while awaiting onPermissionRequired (does not hang)', async () => {
+    const session = store.create('perm-abort')
+    fs.writeFileSync(path.join(workspace, 'x.txt'), 'x')
+
+    const ac = new AbortController()
+    let releasePermission: ((d: UserDecision) => void) | undefined
+
+    const streamMessage: StreamMessageFn = async () => ({
+      text: 'need write',
+      toolUses: [
+        {
+          id: 'toolu_perm_abort',
+          name: 'Write',
+          input: { path: 'y.txt', content: 'y' },
+        },
+      ],
+      stopReason: 'tool_use',
+    })
+
+    const collected = collectEvents({
+      onPermissionRequired: () =>
+        new Promise<UserDecision>((resolve) => {
+          releasePermission = resolve
+          // Abort while the gate is open — raceAbort must unblock
+          queueMicrotask(() => ac.abort(new Error('aborted')))
+        }),
+    })
+
+    await expect(
+      runAgentLoop({
+        sessionId: session.id,
+        store,
+        config: {
+          ...makeConfig(workspace),
+          autoAllowReadTools: false,
+        },
+        userText: 'write',
+        streamMessage,
+        signal: ac.signal,
+        events: collected.events,
+      }),
+    ).rejects.toThrow(/abort/i)
+
+    // Permission promise may still be pending; resolve to avoid unhandled hang in test
+    releasePermission?.('deny')
+  })
 })

@@ -88,6 +88,72 @@ export type SpawnCollectArgs = {
   timeoutMs: number
   /** Cap collected stdout/stderr growth (chars). Defaults to MAX_TOOL_OUTPUT_CHARS. */
   maxOutputChars?: number
+  /** Override env (defaults to buildShellEnv()). Useful for tests. */
+  env?: NodeJS.ProcessEnv
+}
+
+/** Keys required for a working shell on Windows / Unix. */
+const SHELL_ENV_ALLOW = new Set([
+  'PATH',
+  'Path', // Windows may use either casing
+  'PATHEXT',
+  'SystemRoot',
+  'SYSTEMROOT',
+  'windir',
+  'WINDIR',
+  'COMSPEC',
+  'ComSpec',
+  'HOME',
+  'USERPROFILE',
+  'HOMEDRIVE',
+  'HOMEPATH',
+  'TEMP',
+  'TMP',
+  'TMPDIR',
+  'LANG',
+  'LC_ALL',
+  'LC_CTYPE',
+  'TERM',
+  'COLORTERM',
+  'SHELL',
+  'USER',
+  'USERNAME',
+  'LOGNAME',
+  'APPDATA',
+  'LOCALAPPDATA',
+  'ProgramFiles',
+  'ProgramFiles(x86)',
+  'ProgramData',
+  'NUMBER_OF_PROCESSORS',
+  'PROCESSOR_ARCHITECTURE',
+  'OS',
+  'PWD',
+])
+
+/** Strip secrets / API keys from child process environment. */
+const SECRET_ENV_RE = /SECRET|TOKEN|PASSWORD|API_KEY|CREDENTIAL/i
+
+/**
+ * Build a minimal env for shell tool children.
+ * Does NOT pass full process.env — strips ANTHROPIC_API_KEY and other secrets.
+ */
+export function buildShellEnv(
+  source: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = {}
+  for (const [key, value] of Object.entries(source)) {
+    if (value === undefined) continue
+    if (SECRET_ENV_RE.test(key)) continue
+    if (key === 'ANTHROPIC_API_KEY') continue
+    if (SHELL_ENV_ALLOW.has(key)) {
+      out[key] = value
+    }
+  }
+  // Ensure PATH exists if present under either casing
+  if (!out.PATH && !out.Path && source.PATH) {
+    out.PATH = source.PATH
+  }
+  return out
 }
 
 /**
@@ -154,7 +220,7 @@ export function spawnCollect(opts: SpawnCollectArgs): Promise<string> {
     try {
       child = spawn(opts.executable, opts.args, {
         cwd: opts.cwd,
-        env: process.env,
+        env: opts.env ?? buildShellEnv(),
         windowsHide: true,
         // Do NOT use shell:true — command is a single argv element to -Command / -c /c
       }) as ChildProcessWithoutNullStreams

@@ -101,10 +101,12 @@ export const ConfigGetPayloadSchema = z.object({}).strict()
 export type ConfigGetPayload = z.infer<typeof ConfigGetPayloadSchema>
 
 /** Never accepts API key over WS in v1. */
-export const ConfigSetPayloadSchema = z.object({
-  model: z.string().min(1).optional(),
-  autoAllowReadTools: z.boolean().optional(),
-})
+export const ConfigSetPayloadSchema = z
+  .object({
+    model: z.string().min(1).optional(),
+    autoAllowReadTools: z.boolean().optional(),
+  })
+  .strict()
 export type ConfigSetPayload = z.infer<typeof ConfigSetPayloadSchema>
 
 // ── Server → Client ─────────────────────────────────────────────────────────

@@ -307,13 +307,27 @@ async function executeToolUse(args: ExecuteToolArgs): Promise<void> {
 
   if (decision === 'ask') {
     events.onStatus('awaiting_permission', { model, busy: true })
-    const userDecision: UserDecision = await events.onPermissionRequired({
-      requestId,
-      toolRunId,
-      name: toolUse.name,
-      input: toolUse.input,
-      risk,
-    })
+    // Race AbortSignal so chat.abort unblocks a pending permission wait.
+    // Abort is treated as deny (server also resolves pending as deny).
+    let userDecision: UserDecision
+    try {
+      userDecision = await raceAbort(
+        events.onPermissionRequired({
+          requestId,
+          toolRunId,
+          name: toolUse.name,
+          input: toolUse.input,
+          risk,
+        }),
+        toolCtx.signal,
+      )
+    } catch (err) {
+      if (isAbortError(err) || toolCtx.signal?.aborted) {
+        userDecision = 'deny'
+      } else {
+        throw err
+      }
+    }
 
     store.appendAudit('permission', {
       sessionId,
@@ -563,4 +577,47 @@ function throwIfAborted(signal?: AbortSignal): void {
     if (reason instanceof Error) throw reason
     throw new Error(typeof reason === 'string' ? reason : 'aborted')
   }
+}
+
+function abortError(signal: AbortSignal): Error {
+  const reason = signal.reason
+  if (reason instanceof Error) return reason
+  return new Error(typeof reason === 'string' ? reason : 'aborted')
+}
+
+function isAbortError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false
+  const msg = err.message.toLowerCase()
+  return msg === 'aborted' || msg.includes('abort') || err.name === 'AbortError'
+}
+
+/**
+ * Resolve `promise`, or reject immediately when `signal` aborts.
+ * Ensures permission waits do not hang after chat.abort.
+ */
+function raceAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise
+  if (signal.aborted) {
+    return Promise.reject(abortError(signal))
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      cleanup()
+      reject(abortError(signal))
+    }
+    const cleanup = () => {
+      signal.removeEventListener('abort', onAbort)
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    promise.then(
+      (value) => {
+        cleanup()
+        resolve(value)
+      },
+      (err: unknown) => {
+        cleanup()
+        reject(err)
+      },
+    )
+  })
 }

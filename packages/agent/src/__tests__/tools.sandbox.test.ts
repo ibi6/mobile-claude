@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { PathEscapeError } from '../paths'
-import { spawnCollect } from '../tools/bash'
+import { buildShellEnv, spawnCollect } from '../tools/bash'
 import { truncateOutput, truncateText } from '../tools/input'
 import { runTool, anthropicToolDefinitions } from '../tools/registry'
 import type { ToolContext } from '../tools/types'
@@ -192,6 +192,79 @@ describe('tools sandbox', () => {
     // Should not wait for the full 30s sleep
     expect(elapsed).toBeLessThan(15_000)
   }, 20_000)
+
+  it('buildShellEnv strips ANTHROPIC_API_KEY and secret-like keys', () => {
+    const scrubbed = buildShellEnv({
+      PATH: '/usr/bin',
+      HOME: '/home/u',
+      ANTHROPIC_API_KEY: 'sk-secret-should-not-leak',
+      MY_API_KEY: 'also-secret',
+      OAUTH_TOKEN: 'tok',
+      DB_PASSWORD: 'pw',
+      AWS_SECRET_ACCESS_KEY: 'aws',
+      CREDENTIAL_FILE: '/tmp/creds',
+      LANG: 'en_US.UTF-8',
+      TEMP: '/tmp',
+      LEAKY_CUSTOM: 'should-not-pass',
+    })
+    expect(scrubbed.PATH).toBe('/usr/bin')
+    expect(scrubbed.HOME).toBe('/home/u')
+    expect(scrubbed.LANG).toBe('en_US.UTF-8')
+    expect(scrubbed.TEMP).toBe('/tmp')
+    expect(scrubbed).not.toHaveProperty('ANTHROPIC_API_KEY')
+    expect(scrubbed).not.toHaveProperty('MY_API_KEY')
+    expect(scrubbed).not.toHaveProperty('OAUTH_TOKEN')
+    expect(scrubbed).not.toHaveProperty('DB_PASSWORD')
+    expect(scrubbed).not.toHaveProperty('AWS_SECRET_ACCESS_KEY')
+    expect(scrubbed).not.toHaveProperty('CREDENTIAL_FILE')
+    expect(scrubbed).not.toHaveProperty('LEAKY_CUSTOM')
+  })
+
+  it('spawnCollect does not expose ANTHROPIC_API_KEY to the child env', async () => {
+    const isWin = process.platform === 'win32'
+    const marker = 'ANTHROPIC_API_KEY_VALUE='
+    // Force a source env that contains the secret; buildShellEnv must strip it
+    const polluted: NodeJS.ProcessEnv = {
+      ...buildShellEnv(),
+      PATH: process.env.PATH ?? process.env.Path,
+      Path: process.env.Path ?? process.env.PATH,
+      SystemRoot: process.env.SystemRoot,
+      COMSPEC: process.env.COMSPEC,
+      // Intentionally inject secret into opts.env override path via buildShellEnv only
+    }
+    // Verify buildShellEnv used by default path
+    const env = buildShellEnv({
+      ...polluted,
+      ANTHROPIC_API_KEY: 'sk-must-not-appear-in-child',
+      HOME: process.env.HOME ?? process.env.USERPROFILE,
+      USERPROFILE: process.env.USERPROFILE,
+      TEMP: process.env.TEMP ?? os.tmpdir(),
+      TMP: process.env.TMP ?? os.tmpdir(),
+    })
+    expect(env).not.toHaveProperty('ANTHROPIC_API_KEY')
+
+    const executable = isWin ? 'powershell.exe' : 'bash'
+    const args = isWin
+      ? [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          `Write-Output ("${marker}" + $env:ANTHROPIC_API_KEY)`,
+        ]
+      : ['-c', `printf '%s' "${marker}$ANTHROPIC_API_KEY"`]
+
+    const out = await spawnCollect({
+      executable,
+      args,
+      cwd: os.tmpdir(),
+      timeoutMs: 10_000,
+      maxOutputChars: 1024,
+      env,
+    })
+    expect(out).not.toContain('sk-must-not-appear-in-child')
+    // Child may print empty value; must not print the secret
+    expect(out).toMatch(new RegExp(`${marker}(\\s|$)`))
+  }, 15_000)
 
   it('Write path escape denied', async () => {
     const ctx = makeCtx(root)

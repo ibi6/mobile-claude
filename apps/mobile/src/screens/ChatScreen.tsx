@@ -567,7 +567,7 @@ export function ChatScreen({ navigation, route }: Props) {
         } else if (slash.command === 'model') {
           const note = slash.args
             ? `已请求切换模型：${slash.args}`
-            : '用法：/model <模型名>';
+            : `当前模型：${model || '（未知）'}。切换：/model <模型名>`;
           setTimeline((prev) => [
             ...prev,
             {

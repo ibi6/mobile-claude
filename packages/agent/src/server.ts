@@ -161,6 +161,9 @@ export async function startServer(
   const chatIdem = new Map<string, number>()
   /** Authenticated sockets — used for reconnect fan-out of live events. */
   const authenticatedConns = new Set<ClientConn>()
+  /** Spec default: at most 2 concurrent agent generations globally. */
+  const MAX_GLOBAL_GENERATIONS = 2
+  let activeGenerations = 0
 
   const loopFn = opts.runLoop ?? runAgentLoop
 
@@ -635,6 +638,16 @@ export async function startServer(
       return
     }
 
+    if (activeGenerations >= MAX_GLOBAL_GENERATIONS) {
+      sendError(
+        conn.ws,
+        'busy',
+        `too many concurrent generations (max ${MAX_GLOBAL_GENERATIONS})`,
+        { replyTo: env.id, sessionId },
+      )
+      return
+    }
+
     const apiKey = resolveApiKey()
     // Allow runLoop injection without key (tests); real path needs key unless injected
     if (!opts.runLoop && !apiKey) {
@@ -653,6 +666,7 @@ export async function startServer(
     const abort = new AbortController()
     rt.abort = abort
     rt.busy = true
+    activeGenerations += 1
     rt.phase = 'thinking'
     rt.model = session.model || runtime.defaultModel
 
@@ -861,6 +875,7 @@ export async function startServer(
         rt.phase = 'idle'
         rt.abort = undefined
         rt.loopPromise = undefined
+        if (activeGenerations > 0) activeGenerations -= 1
         pushLive(
           createEnvelope(
             'status',
@@ -885,8 +900,24 @@ export async function startServer(
 
     const { sessionId } = parsed.data
     const rt = sessionRuntime.get(sessionId)
+
+    // Abort first so raceAbort on permission waits rejects with aborted
+    // (before deny resolve can win Promise.race).
+    if (rt?.abort) {
+      rt.abort.abort(new Error('aborted'))
+    }
+
+    // Unblock any permission waiters for this session (deny + clear)
+    for (const [rid, p] of pendingPermissions) {
+      if (p.sessionId === sessionId) {
+        clearTimeout(p.timer)
+        p.resolve('deny')
+        pendingPermissions.delete(rid)
+      }
+    }
+
     if (!rt?.abort) {
-      // Nothing to abort — still ok
+      // Nothing was running — still ok (pending perms already cleared above)
       send(
         conn.ws,
         createEnvelope(
@@ -895,10 +926,7 @@ export async function startServer(
           { sessionId },
         ),
       )
-      return
     }
-
-    rt.abort.abort(new Error('aborted'))
   }
 
   function handlePermissionRespond(conn: ClientConn, env: Envelope): void {
@@ -971,10 +999,21 @@ export async function startServer(
     if (command === 'model') {
       const model = (args ?? '').trim()
       if (!model) {
-        sendError(conn.ws, 'validation', 'model name required in args', {
-          replyTo: env.id,
-          sessionId,
-        })
+        // No args: report current model (session override or default)
+        const current = session.model || runtime.defaultModel
+        rt.model = current
+        send(
+          conn.ws,
+          createEnvelope(
+            'status',
+            {
+              phase: rt.phase,
+              model: current,
+              busy: rt.busy,
+            } satisfies StatusPayload,
+            { sessionId, id: env.id },
+          ),
+        )
         return
       }
       store.setModel(sessionId, model)
@@ -1073,13 +1112,7 @@ export async function startServer(
   }
 
   function handleConfigSet(conn: ClientConn, env: Envelope): void {
-    const parsed = ConfigSetPayloadSchema.safeParse(env.payload)
-    if (!parsed.success) {
-      sendError(conn.ws, 'validation', parsed.error.message, { replyTo: env.id })
-      return
-    }
-
-    // Reject any attempt to smuggle API key fields
+    // Reject API key smuggling before schema parse (strict() would only yield validation)
     const raw = env.payload
     if (
       raw !== null &&
@@ -1096,6 +1129,12 @@ export async function startServer(
         'API keys cannot be set over WebSocket; use host env ANTHROPIC_API_KEY',
         { replyTo: env.id },
       )
+      return
+    }
+
+    const parsed = ConfigSetPayloadSchema.safeParse(env.payload)
+    if (!parsed.success) {
+      sendError(conn.ws, 'validation', parsed.error.message, { replyTo: env.id })
       return
     }
 
