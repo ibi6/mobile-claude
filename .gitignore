@@ -5,3 +5,10 @@ dist
 *.db
 .mobile-claude
 *.tsbuildinfo
+
+# local agent / SDD scratch (do not publish)
+.superpowers/
+
+# local agent scratch
+.superpowers/
+
