@@ -14,10 +14,13 @@ import { useFocusEffect } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type {
   ChatMessage,
+  DiffAvailablePayload,
   Envelope,
   ErrorPayload,
   MessageCompletedPayload,
   MessageDeltaPayload,
+  PermissionDecision,
+  PermissionRequestPayload,
   SessionPhase,
   SessionSnapshotPayload,
   StatusPayload,
@@ -25,7 +28,9 @@ import type {
   ToolProgressPayload,
   ToolStartedPayload,
 } from '@mobile-claude/protocol';
+import { DiffViewer } from '../components/DiffViewer';
 import { MessageBubble } from '../components/MessageBubble';
+import { PermissionSheet } from '../components/PermissionSheet';
 import { ToolCard } from '../components/ToolCard';
 import type { MainStackParamList } from '../navigation';
 import { useConnection } from '../state/connection';
@@ -52,6 +57,12 @@ type ToolItem = {
 };
 
 type TimelineItem = MessageItem | ToolItem;
+
+type DiffEntry = {
+  toolRunId: string;
+  path: string;
+  unifiedDiff: string;
+};
 
 function newLocalId(prefix: string): string {
   const c = globalThis.crypto as Crypto | undefined;
@@ -160,10 +171,24 @@ export function ChatScreen({ navigation, route }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  const [pendingPermission, setPendingPermission] =
+    useState<PermissionRequestPayload | null>(null);
+  const [permissionResponding, setPermissionResponding] = useState(false);
+  /** toolRunId → diff payload for ToolCard chip */
+  const [diffsByTool, setDiffsByTool] = useState<Record<string, DiffEntry>>({});
+  const [activeDiff, setActiveDiff] = useState<DiffEntry | null>(null);
 
   const listRef = useRef<FlatList<TimelineItem>>(null);
   const sessionIdRef = useRef(sessionId);
   sessionIdRef.current = sessionId;
+
+  // Reset per-session UI when navigating to another chat
+  useEffect(() => {
+    setDiffsByTool({});
+    setActiveDiff(null);
+    setPendingPermission(null);
+    setPermissionResponding(false);
+  }, [sessionId]);
 
   const applyStatus = useCallback((s: StatusPayload) => {
     setPhase(s.phase);
@@ -177,6 +202,14 @@ export function ChatScreen({ navigation, route }: Props) {
       setTimeline(messagesToTimeline(snap.messages ?? []));
       if (snap.status) {
         applyStatus(snap.status);
+      }
+      // Resume pending permission after reconnect / session.open
+      if (snap.pendingPermission) {
+        setPendingPermission(snap.pendingPermission);
+        setPermissionResponding(false);
+      } else {
+        setPendingPermission(null);
+        setPermissionResponding(false);
       }
       setError(null);
     },
@@ -376,6 +409,32 @@ export function ChatScreen({ navigation, route }: Props) {
       );
 
       unsubs.push(
+        client.on('permission.request', (env) => {
+          if (!sameSession(env, sessionId)) return;
+          const p = env.payload as PermissionRequestPayload;
+          if (!p?.requestId) return;
+          setPendingPermission(p);
+          setPermissionResponding(false);
+          setPhase('awaiting_permission');
+          setBusy(true);
+        }),
+      );
+
+      unsubs.push(
+        client.on('diff.available', (env) => {
+          if (!sameSession(env, sessionId)) return;
+          const p = env.payload as DiffAvailablePayload;
+          if (!p?.toolRunId || typeof p.unifiedDiff !== 'string') return;
+          const entry: DiffEntry = {
+            toolRunId: p.toolRunId,
+            path: p.path ?? '',
+            unifiedDiff: p.unifiedDiff,
+          };
+          setDiffsByTool((prev) => ({ ...prev, [p.toolRunId]: entry }));
+        }),
+      );
+
+      unsubs.push(
         client.on('error', (env) => {
           if (env.sessionId && env.sessionId !== sessionId) return;
           const p = env.payload as ErrorPayload;
@@ -383,6 +442,7 @@ export function ChatScreen({ navigation, route }: Props) {
             setError(p.message);
           }
           setSending(false);
+          setPermissionResponding(false);
           // Pre-turn / rejected send: server never flipped busy — clear optimistic UI
           const code = p?.code;
           if (
@@ -396,6 +456,10 @@ export function ChatScreen({ navigation, route }: Props) {
           ) {
             setBusy(false);
             setPhase('idle');
+            // Stale / unknown permission → clear sheet
+            if (code === 'not_found') {
+              setPendingPermission(null);
+            }
           }
         }),
       );
@@ -475,25 +539,62 @@ export function ChatScreen({ navigation, route }: Props) {
     }
   }, [client, sessionId]);
 
-  const renderItem = useCallback(({ item }: { item: TimelineItem }) => {
-    if (item.kind === 'tool') {
+  const onPermissionRespond = useCallback(
+    (decision: PermissionDecision) => {
+      if (!client || !sessionId || !pendingPermission || permissionResponding) {
+        return;
+      }
+      setPermissionResponding(true);
+      try {
+        client.send(
+          'permission.respond',
+          {
+            requestId: pendingPermission.requestId,
+            decision,
+          },
+          sessionId,
+        );
+        // Clear sheet optimistically; server will continue the loop
+        setPendingPermission(null);
+        setPermissionResponding(false);
+      } catch (err) {
+        setPermissionResponding(false);
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [client, pendingPermission, permissionResponding, sessionId],
+  );
+
+  const renderItem = useCallback(
+    ({ item }: { item: TimelineItem }) => {
+      if (item.kind === 'tool') {
+        const diff = diffsByTool[item.toolRunId];
+        return (
+          <ToolCard
+            name={item.name}
+            inputSummary={item.inputSummary}
+            status={item.status}
+            outputSummary={item.outputSummary}
+            onOpenDiff={
+              diff
+                ? () => {
+                    setActiveDiff(diff);
+                  }
+                : undefined
+            }
+          />
+        );
+      }
       return (
-        <ToolCard
-          name={item.name}
-          inputSummary={item.inputSummary}
-          status={item.status}
-          outputSummary={item.outputSummary}
+        <MessageBubble
+          role={item.role}
+          text={item.text}
+          streaming={item.streaming}
         />
       );
-    }
-    return (
-      <MessageBubble
-        role={item.role}
-        text={item.text}
-        streaming={item.streaming}
-      />
-    );
-  }, []);
+    },
+    [diffsByTool],
+  );
 
   if (!sessionId) {
     return (
@@ -630,6 +731,22 @@ export function ChatScreen({ navigation, route }: Props) {
           </Pressable>
         )}
       </View>
+
+      <PermissionSheet
+        visible={pendingPermission !== null}
+        toolName={pendingPermission?.name ?? ''}
+        risk={pendingPermission?.risk ?? 'medium'}
+        input={pendingPermission?.input}
+        responding={permissionResponding}
+        onRespond={onPermissionRespond}
+      />
+
+      <DiffViewer
+        visible={activeDiff !== null}
+        path={activeDiff?.path ?? ''}
+        unifiedDiff={activeDiff?.unifiedDiff ?? ''}
+        onClose={() => setActiveDiff(null)}
+      />
     </KeyboardAvoidingView>
   );
 }

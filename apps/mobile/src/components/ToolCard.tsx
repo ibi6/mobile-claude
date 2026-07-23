@@ -1,4 +1,4 @@
-import { StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { theme } from '../theme';
 
 export type ToolCardProps = {
@@ -7,6 +7,8 @@ export type ToolCardProps = {
   /** running | ok | error | denied | aborted | … */
   status: string;
   outputSummary?: string;
+  /** When set, shows a "查看 Diff" chip that calls this. */
+  onOpenDiff?: () => void;
 };
 
 function statusStyle(status: string): {
@@ -65,6 +67,7 @@ export function ToolCard({
   inputSummary,
   status,
   outputSummary,
+  onOpenDiff,
 }: ToolCardProps) {
   const badge = statusStyle(status);
   const running =
@@ -96,6 +99,18 @@ export function ToolCard({
         <Text style={styles.output} numberOfLines={4}>
           {outputSummary}
         </Text>
+      ) : null}
+      {onOpenDiff ? (
+        <Pressable
+          onPress={onOpenDiff}
+          style={({ pressed }) => [
+            styles.diffChip,
+            pressed && styles.diffChipPressed,
+          ]}
+          accessibilityLabel="查看 Diff"
+        >
+          <Text style={styles.diffChipText}>查看 Diff</Text>
+        </Pressable>
       ) : null}
     </View>
   );
@@ -160,5 +175,23 @@ const styles = StyleSheet.create({
     color: theme.colors.textMuted,
     lineHeight: 18,
     fontFamily: 'monospace',
+  },
+  diffChip: {
+    alignSelf: 'flex-start',
+    marginTop: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.xs + 2,
+    borderRadius: theme.radius.full,
+    backgroundColor: '#EEF2FF',
+    borderWidth: 1,
+    borderColor: theme.colors.primaryLight,
+  },
+  diffChipPressed: {
+    opacity: 0.8,
+  },
+  diffChipText: {
+    fontSize: theme.fontSize.xs,
+    fontWeight: '700',
+    color: theme.colors.primaryDark,
   },
 });
