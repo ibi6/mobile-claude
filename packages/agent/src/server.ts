@@ -446,10 +446,14 @@ export async function startServer(
 
       send(
         conn.ws,
-        createEnvelope('auth.pair_result', {
-          deviceToken: result.deviceToken,
-          deviceId: result.deviceId,
-        }),
+        createEnvelope(
+          'auth.pair_result',
+          {
+            deviceToken: result.deviceToken,
+            deviceId: result.deviceId,
+          },
+          { id: env.id },
+        ),
       )
       send(
         conn.ws,
@@ -488,11 +492,15 @@ export async function startServer(
 
     send(
       conn.ws,
-      createEnvelope('auth.ok', {
-        deviceId,
-        workspaceRoot: runtime.workspaceRoot,
-        serverVersion: SERVER_VERSION,
-      }),
+      createEnvelope(
+        'auth.ok',
+        {
+          deviceId,
+          workspaceRoot: runtime.workspaceRoot,
+          serverVersion: SERVER_VERSION,
+        },
+        { id: env.id },
+      ),
     )
 
     // Spec §5.4: pending permission.request survives reconnect — re-deliver on re-hello.
@@ -514,7 +522,10 @@ export async function startServer(
       updatedAt: s.updated_at,
     }))
 
-    send(conn.ws, createEnvelope('session.list_result', { sessions }))
+    send(
+      conn.ws,
+      createEnvelope('session.list_result', { sessions }, { id: env.id }),
+    )
   }
 
   function handleSessionCreate(conn: ClientConn, env: Envelope): void {
@@ -533,7 +544,13 @@ export async function startServer(
     ensureRuntime(row.id).model = row.model
     const snap = buildSnapshot(row.id)
     if (snap) {
-      send(conn.ws, createEnvelope('session.snapshot', snap, { sessionId: row.id }))
+      send(
+        conn.ws,
+        createEnvelope('session.snapshot', snap, {
+          sessionId: row.id,
+          id: env.id,
+        }),
+      )
     }
   }
 
@@ -554,7 +571,10 @@ export async function startServer(
       return
     }
 
-    send(conn.ws, createEnvelope('session.snapshot', snap, { sessionId }))
+    send(
+      conn.ws,
+      createEnvelope('session.snapshot', snap, { sessionId, id: env.id }),
+    )
     resendPendingPermission(conn.ws, sessionId)
   }
 
@@ -602,7 +622,10 @@ export async function startServer(
       createdAt: s.created_at,
       updatedAt: s.updated_at,
     }))
-    send(conn.ws, createEnvelope('session.list_result', { sessions }))
+    send(
+      conn.ws,
+      createEnvelope('session.list_result', { sessions }, { id: env.id }),
+    )
   }
 
   function handleChatSend(conn: ClientConn, env: Envelope): void {
@@ -857,12 +880,13 @@ export async function startServer(
         }
         const msg = err instanceof Error ? err.message : String(err)
         console.error('[server] agent loop error:', msg)
+        // Safe UI message — do not leak raw SDK/network details to clients
         pushLive(
           createEnvelope(
             'error',
             {
               code: 'upstream' as ErrorCode,
-              message: msg,
+              message: '模型请求失败，请稍后重试',
               replyTo: env.id,
             } satisfies ErrorPayload,
             { sessionId },
@@ -991,7 +1015,10 @@ export async function startServer(
       }
       const snap = buildSnapshot(sessionId)
       if (snap) {
-        send(conn.ws, createEnvelope('session.snapshot', snap, { sessionId }))
+        send(
+          conn.ws,
+          createEnvelope('session.snapshot', snap, { sessionId, id: env.id }),
+        )
       }
       return
     }
@@ -1023,13 +1050,9 @@ export async function startServer(
         createEnvelope(
           'status',
           { phase: rt.phase, model, busy: rt.busy } satisfies StatusPayload,
-          { sessionId },
+          { sessionId, id: env.id },
         ),
       )
-      const snap = buildSnapshot(sessionId)
-      if (snap) {
-        send(conn.ws, createEnvelope('session.snapshot', snap, { sessionId }))
-      }
       return
     }
 
@@ -1099,15 +1122,19 @@ export async function startServer(
     // Never include API key
     send(
       conn.ws,
-      createEnvelope('config', {
-        model: runtime.defaultModel,
-        autoAllowReadTools: runtime.autoAllowReadTools,
-        workspaceRoot: runtime.workspaceRoot,
-        host: runtime.host,
-        port: runtime.port,
-        serverVersion: SERVER_VERSION,
-        hasApiKey: Boolean(resolveApiKey()),
-      }),
+      createEnvelope(
+        'config',
+        {
+          model: runtime.defaultModel,
+          autoAllowReadTools: runtime.autoAllowReadTools,
+          workspaceRoot: runtime.workspaceRoot,
+          host: runtime.host,
+          port: runtime.port,
+          serverVersion: SERVER_VERSION,
+          hasApiKey: Boolean(resolveApiKey()),
+        },
+        { id: env.id },
+      ),
     )
   }
 
@@ -1147,15 +1174,19 @@ export async function startServer(
 
     send(
       conn.ws,
-      createEnvelope('config', {
-        model: runtime.defaultModel,
-        autoAllowReadTools: runtime.autoAllowReadTools,
-        workspaceRoot: runtime.workspaceRoot,
-        host: runtime.host,
-        port: runtime.port,
-        serverVersion: SERVER_VERSION,
-        hasApiKey: Boolean(resolveApiKey()),
-      }),
+      createEnvelope(
+        'config',
+        {
+          model: runtime.defaultModel,
+          autoAllowReadTools: runtime.autoAllowReadTools,
+          workspaceRoot: runtime.workspaceRoot,
+          host: runtime.host,
+          port: runtime.port,
+          serverVersion: SERVER_VERSION,
+          hasApiKey: Boolean(resolveApiKey()),
+        },
+        { id: env.id },
+      ),
     )
   }
 
