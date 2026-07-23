@@ -1,43 +1,29 @@
-import { useEffect, useState } from 'react';
 import { ActivityIndicator, StyleSheet, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { RootNavigator } from './src/navigation';
-import { loadConnection } from './src/storage/secure';
+import { ConnectionProvider, useConnection } from './src/state/connection';
+import { SessionsProvider } from './src/state/sessions';
 import { theme } from './src/theme';
 
 /**
- * App entry: hydrate secure connection, then mount navigation shells.
- * WebSocket client is intentionally out of scope (Task 9).
+ * App entry: ConnectionProvider hydrates SecureStore + WS client,
+ * then mounts navigation (Pair | Main) with session list state.
  */
 export default function App() {
-  const [ready, setReady] = useState(false);
-  const [hasConnection, setHasConnection] = useState(false);
+  return (
+    <SafeAreaProvider>
+      <ConnectionProvider>
+        <SessionsProvider>
+          <AppReady />
+        </SessionsProvider>
+      </ConnectionProvider>
+    </SafeAreaProvider>
+  );
+}
 
-  useEffect(() => {
-    let cancelled = false;
-
-    (async () => {
-      try {
-        const connection = await loadConnection();
-        if (!cancelled) {
-          setHasConnection(connection !== null);
-        }
-      } catch {
-        if (!cancelled) {
-          setHasConnection(false);
-        }
-      } finally {
-        if (!cancelled) {
-          setReady(true);
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+function AppReady() {
+  const { ready, hasConnection } = useConnection();
 
   if (!ready) {
     return (
@@ -49,10 +35,10 @@ export default function App() {
   }
 
   return (
-    <SafeAreaProvider>
+    <>
       <StatusBar style="dark" />
       <RootNavigator hasConnection={hasConnection} />
-    </SafeAreaProvider>
+    </>
   );
 }
 

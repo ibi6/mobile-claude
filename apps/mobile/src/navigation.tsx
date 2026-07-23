@@ -77,7 +77,7 @@ export type RootNavigatorProps = {
 
 /**
  * Root navigation: Pair | Main (Sessions stack + Chat + Files + Settings).
- * Auth gate only chooses the initial route; full reconnect lives in Task 9.
+ * Initial route from stored device token; pair success resets to Main.
  */
 export function RootNavigator({ hasConnection }: RootNavigatorProps) {
   return (

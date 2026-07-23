@@ -1,5 +1,4 @@
 /**
- * Re-export protocol version so the app workspace dep is exercised early.
- * Full WS client arrives in Task 9.
+ * Re-export protocol version for app UI / auth.hello clientVersion alignment.
  */
 export { PROTOCOL_VERSION } from '@mobile-claude/protocol';
