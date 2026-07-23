@@ -18,3 +18,7 @@ Task 5: complete (commit 240053a, sandboxed tools Read/Write/Edit/Glob/Grep/Bash
 Task 5: complete (commits 240053a..8cdf01f, HIGH fixes applied)
 
 Task 6: complete (feat(agent): anthropic streaming tool loop — client + loop + mock integration tests)
+
+Task 6: complete (commit c536310, 68 tests)
+
+Task 7: complete (feat(agent): websocket server and CLI — startServer + mobile-claude-agent, 78 tests)
