@@ -26,10 +26,36 @@ export type PermissionRuleRow = {
   created_at: number
 }
 
+export type ToolRunRow = {
+  id: string
+  session_id: string
+  message_id: string | null
+  name: string
+  input: unknown
+  output: unknown
+  status: string
+  created_at: number
+}
+
 export type AppendMessageInput = {
   role: string
   content: unknown
   id?: string
+}
+
+export type AppendToolRunInput = {
+  id?: string
+  messageId?: string | null
+  name: string
+  input: unknown
+  output?: unknown
+  status: string
+}
+
+export type UpdateToolRunInput = {
+  messageId?: string | null
+  output?: unknown
+  status?: string
 }
 
 /** Session + message + permission-rule CRUD on SQLite. */
@@ -169,6 +195,21 @@ export class SessionStore {
     this.db.persist()
   }
 
+  setTitle(sessionId: string, title: string): void {
+    const session = this.get(sessionId)
+    if (!session) {
+      throw new Error(`session not found: ${sessionId}`)
+    }
+    const now = Date.now()
+    const t = title.trim() || 'New session'
+    this.db.run('UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?', [
+      t,
+      now,
+      sessionId,
+    ])
+    this.db.persist()
+  }
+
   /**
    * Clear transcript for `/clear`. Keeps the same session id (and rules/model).
    */
@@ -245,5 +286,163 @@ export class SessionStore {
   clearPermissionRules(sessionId: string): void {
     this.db.run('DELETE FROM permission_rules WHERE session_id = ?', [sessionId])
     this.db.persist()
+  }
+
+  appendToolRun(sessionId: string, run: AppendToolRunInput): ToolRunRow {
+    const session = this.get(sessionId)
+    if (!session) {
+      throw new Error(`session not found: ${sessionId}`)
+    }
+
+    const row: ToolRunRow = {
+      id: run.id ?? crypto.randomUUID(),
+      session_id: sessionId,
+      message_id: run.messageId ?? null,
+      name: run.name,
+      input: run.input,
+      output: run.output ?? null,
+      status: run.status,
+      created_at: Date.now(),
+    }
+
+    this.db.run(
+      'INSERT INTO tool_runs (id, session_id, message_id, name, input_json, output_json, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [
+        row.id,
+        row.session_id,
+        row.message_id,
+        row.name,
+        JSON.stringify(row.input ?? null),
+        row.output === null || row.output === undefined
+          ? null
+          : JSON.stringify(row.output),
+        row.status,
+        row.created_at,
+      ],
+    )
+    this.db.persist()
+    return row
+  }
+
+  updateToolRun(id: string, patch: UpdateToolRunInput): ToolRunRow {
+    const existing = this.getToolRun(id)
+    if (!existing) {
+      throw new Error(`tool run not found: ${id}`)
+    }
+
+    const next: ToolRunRow = {
+      ...existing,
+      message_id:
+        patch.messageId !== undefined ? patch.messageId : existing.message_id,
+      output: patch.output !== undefined ? patch.output : existing.output,
+      status: patch.status !== undefined ? patch.status : existing.status,
+    }
+
+    this.db.run(
+      'UPDATE tool_runs SET message_id = ?, output_json = ?, status = ? WHERE id = ?',
+      [
+        next.message_id,
+        next.output === null || next.output === undefined
+          ? null
+          : JSON.stringify(next.output),
+        next.status,
+        id,
+      ],
+    )
+    this.db.persist()
+    return next
+  }
+
+  getToolRun(id: string): ToolRunRow | undefined {
+    const r = this.db.get<{
+      id: string
+      session_id: string
+      message_id: string | null
+      name: string
+      input_json: string
+      output_json: string | null
+      status: string
+      created_at: number
+    }>(
+      'SELECT id, session_id, message_id, name, input_json, output_json, status, created_at FROM tool_runs WHERE id = ?',
+      [id],
+    )
+    if (!r) return undefined
+    return parseToolRunRow(r)
+  }
+
+  listToolRuns(sessionId: string): ToolRunRow[] {
+    const rows = this.db.all<{
+      id: string
+      session_id: string
+      message_id: string | null
+      name: string
+      input_json: string
+      output_json: string | null
+      status: string
+      created_at: number
+    }>(
+      'SELECT id, session_id, message_id, name, input_json, output_json, status, created_at FROM tool_runs WHERE session_id = ? ORDER BY created_at ASC',
+      [sessionId],
+    )
+    return rows.map(parseToolRunRow)
+  }
+
+  listToolRunsForMessage(messageId: string): ToolRunRow[] {
+    const rows = this.db.all<{
+      id: string
+      session_id: string
+      message_id: string | null
+      name: string
+      input_json: string
+      output_json: string | null
+      status: string
+      created_at: number
+    }>(
+      'SELECT id, session_id, message_id, name, input_json, output_json, status, created_at FROM tool_runs WHERE message_id = ? ORDER BY created_at ASC',
+      [messageId],
+    )
+    return rows.map(parseToolRunRow)
+  }
+}
+
+function parseToolRunRow(r: {
+  id: string
+  session_id: string
+  message_id: string | null
+  name: string
+  input_json: string
+  output_json: string | null
+  status: string
+  created_at: number
+}): ToolRunRow {
+  let input: unknown = null
+  let output: unknown = null
+  try {
+    input = JSON.parse(r.input_json) as unknown
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error(`[sessionStore] tool_run ${r.id}: invalid input_json (${msg})`)
+  }
+  if (r.output_json != null) {
+    try {
+      output = JSON.parse(r.output_json) as unknown
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error(
+        `[sessionStore] tool_run ${r.id}: invalid output_json (${msg})`,
+      )
+      output = r.output_json
+    }
+  }
+  return {
+    id: r.id,
+    session_id: r.session_id,
+    message_id: r.message_id,
+    name: r.name,
+    input,
+    output,
+    status: r.status,
+    created_at: r.created_at,
   }
 }
