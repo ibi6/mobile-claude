@@ -88,15 +88,48 @@ function loadSqlJs(): Promise<SqlJsStatic> {
   return sqlJsPromise
 }
 
-function rowsFromStatement(
-  stmt: ReturnType<SqlJsDatabase['prepare']>,
+function queryRows(
+  raw: SqlJsDatabase,
+  sql: string,
+  params: SqlValue[] = [],
 ): Record<string, unknown>[] {
-  const rows: Record<string, unknown>[] = []
-  while (stmt.step()) {
-    rows.push(stmt.getAsObject() as Record<string, unknown>)
+  const stmt = raw.prepare(sql)
+  try {
+    if (params.length > 0) stmt.bind(params)
+    const rows: Record<string, unknown>[] = []
+    while (stmt.step()) {
+      rows.push(stmt.getAsObject() as Record<string, unknown>)
+    }
+    return rows
+  } finally {
+    stmt.free()
   }
-  stmt.free()
-  return rows
+}
+
+/** Atomic file replace: write temp then rename (Windows-safe if target exists). */
+function atomicWriteFile(targetPath: string, data: Uint8Array): void {
+  const dir = path.dirname(targetPath)
+  const base = path.basename(targetPath)
+  const tmpPath = path.join(dir, `.${base}.${process.pid}.${Date.now()}.tmp`)
+  fs.writeFileSync(tmpPath, Buffer.from(data))
+  try {
+    fs.renameSync(tmpPath, targetPath)
+  } catch (err) {
+    // On Windows, rename fails if destination already exists.
+    try {
+      if (fs.existsSync(targetPath)) {
+        fs.unlinkSync(targetPath)
+      }
+      fs.renameSync(tmpPath, targetPath)
+    } catch (retryErr) {
+      try {
+        fs.unlinkSync(tmpPath)
+      } catch {
+        /* ignore cleanup failure */
+      }
+      throw retryErr ?? err
+    }
+  }
 }
 
 /**
@@ -118,6 +151,7 @@ export async function openDb(dataDir: string): Promise<AppDatabase> {
     raw = new SQL.Database()
   }
 
+  raw.exec('PRAGMA foreign_keys = ON;')
   raw.exec(SCHEMA_SQL)
 
   let closed = false
@@ -131,20 +165,15 @@ export async function openDb(dataDir: string): Promise<AppDatabase> {
       raw.run(sql, params)
     },
     get<T extends Record<string, unknown>>(sql: string, params: SqlValue[] = []): T | undefined {
-      const stmt = raw.prepare(sql)
-      if (params.length > 0) stmt.bind(params)
-      const rows = rowsFromStatement(stmt)
-      return rows[0] as T | undefined
+      return queryRows(raw, sql, params)[0] as T | undefined
     },
     all<T extends Record<string, unknown>>(sql: string, params: SqlValue[] = []): T[] {
-      const stmt = raw.prepare(sql)
-      if (params.length > 0) stmt.bind(params)
-      return rowsFromStatement(stmt) as T[]
+      return queryRows(raw, sql, params) as T[]
     },
     persist() {
       if (closed) return
       const data = raw.export()
-      fs.writeFileSync(dbPath, Buffer.from(data))
+      atomicWriteFile(dbPath, data)
     },
     close() {
       if (closed) return

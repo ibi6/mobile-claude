@@ -66,17 +66,29 @@ export class AuthService {
       throw new Error('invalid or expired pairing code')
     }
 
-    this.db.run('DELETE FROM pairing_codes WHERE code = ?', [normalized])
-
+    // Insert device first, then consume code — never orphan a used code on insert failure.
+    // Wrapped in a transaction so both succeed or neither does.
     const deviceId = crypto.randomUUID()
     const deviceToken = crypto.randomBytes(32).toString('base64url')
     const tokenHash = this.hashToken(deviceToken)
     const createdAt = Date.now()
 
-    this.db.run(
-      'INSERT INTO devices (id, token_hash, name, created_at) VALUES (?, ?, ?, ?)',
-      [deviceId, tokenHash, name, createdAt],
-    )
+    try {
+      this.db.exec('BEGIN')
+      this.db.run(
+        'INSERT INTO devices (id, token_hash, name, created_at) VALUES (?, ?, ?, ?)',
+        [deviceId, tokenHash, name, createdAt],
+      )
+      this.db.run('DELETE FROM pairing_codes WHERE code = ?', [normalized])
+      this.db.exec('COMMIT')
+    } catch (err) {
+      try {
+        this.db.exec('ROLLBACK')
+      } catch {
+        /* ignore rollback errors */
+      }
+      throw err
+    }
     this.db.persist()
 
     return { deviceToken, deviceId }

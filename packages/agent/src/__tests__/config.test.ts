@@ -44,6 +44,7 @@ describe('loadConfig', () => {
         defaultModel: 'claude-test',
         shell: 'cmd',
         autoAllowReadTools: false,
+        pairingCodeTtlMs: 120_000,
       }),
     )
 
@@ -63,5 +64,19 @@ describe('loadConfig', () => {
     expect(cfg.defaultModel).toBe('from-env') // env wins
     expect(cfg.shell).toBe('cmd')
     expect(cfg.autoAllowReadTools).toBe(false)
+    expect(cfg.pairingCodeTtlMs).toBe(120_000)
+  })
+
+  it('rejects invalid port and pairingCodeTtlMs from config file', () => {
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, JSON.stringify({ port: 99999 }))
+    expect(() =>
+      loadConfig({ env: {}, homeDir: tmpHome, cwd: tmpHome, configPath }),
+    ).toThrow(/invalid PORT/i)
+
+    fs.writeFileSync(configPath, JSON.stringify({ pairingCodeTtlMs: -1 }))
+    expect(() =>
+      loadConfig({ env: {}, homeDir: tmpHome, cwd: tmpHome, configPath }),
+    ).toThrow(/invalid positive integer/i)
   })
 })

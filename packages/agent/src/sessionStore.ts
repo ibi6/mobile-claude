@@ -131,14 +131,28 @@ export class SessionStore {
       'SELECT id, session_id, role, content_json, sort_index, created_at FROM messages WHERE session_id = ? ORDER BY sort_index ASC',
       [sessionId],
     )
-    return rows.map((r) => ({
-      id: r.id,
-      session_id: r.session_id,
-      role: r.role,
-      content: JSON.parse(r.content_json) as unknown,
-      sort_index: r.sort_index,
-      created_at: r.created_at,
-    }))
+    const result: MessageRow[] = []
+    for (const r of rows) {
+      let content: unknown
+      try {
+        content = JSON.parse(r.content_json) as unknown
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        console.error(
+          `[sessionStore] skip message ${r.id}: invalid content_json (${msg})`,
+        )
+        continue
+      }
+      result.push({
+        id: r.id,
+        session_id: r.session_id,
+        role: r.role,
+        content,
+        sort_index: r.sort_index,
+        created_at: r.created_at,
+      })
+    }
+    return result
   }
 
   setModel(sessionId: string, model: string): void {

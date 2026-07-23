@@ -52,9 +52,9 @@ function parseBool(value: string | undefined): boolean | undefined {
   return undefined
 }
 
-function parsePort(value: string | undefined): number | undefined {
+function parsePort(value: string | number | undefined): number | undefined {
   if (value === undefined || value === '') return undefined
-  const n = Number(value)
+  const n = typeof value === 'number' ? value : Number(value)
   if (!Number.isInteger(n) || n < 1 || n > 65535) {
     throw new Error(`invalid PORT: ${value}`)
   }
@@ -67,9 +67,9 @@ function parseShell(value: string | undefined): AgentConfig['shell'] | undefined
   throw new Error(`invalid shell: ${value} (expected powershell|bash|cmd)`)
 }
 
-function parsePositiveInt(value: string | undefined): number | undefined {
+function parsePositiveInt(value: string | number | undefined): number | undefined {
   if (value === undefined || value === '') return undefined
-  const n = Number(value)
+  const n = typeof value === 'number' ? value : Number(value)
   if (!Number.isInteger(n) || n <= 0) {
     throw new Error(`invalid positive integer: ${value}`)
   }
@@ -117,7 +117,7 @@ export function loadConfig(opts: LoadConfigOptions = {}): AgentConfig {
 
   return {
     host: env.HOST ?? file.host ?? DEFAULT_HOST,
-    port: parsePort(env.PORT) ?? file.port ?? DEFAULT_PORT,
+    port: parsePort(env.PORT) ?? parsePort(file.port) ?? DEFAULT_PORT,
     workspaceRoot: env.WORKSPACE_ROOT ?? file.workspaceRoot ?? cwd,
     dataDir: env.DATA_DIR ?? file.dataDir ?? path.join(homeDir, '.mobile-claude'),
     defaultModel: env.DEFAULT_MODEL ?? file.defaultModel ?? DEFAULT_MODEL,
@@ -125,7 +125,7 @@ export function loadConfig(opts: LoadConfigOptions = {}): AgentConfig {
     autoAllowReadTools: autoAllowFromEnv ?? file.autoAllowReadTools ?? true,
     pairingCodeTtlMs:
       parsePositiveInt(env.PAIRING_CODE_TTL_MS) ??
-      file.pairingCodeTtlMs ??
+      parsePositiveInt(file.pairingCodeTtlMs) ??
       DEFAULT_PAIRING_TTL_MS,
   }
 }

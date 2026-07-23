@@ -116,6 +116,33 @@ describe('SessionStore', () => {
     expect(store.findPermissionRule(s.id, 'Write', 'src/a.ts')).toBeUndefined()
   })
 
+  it('clearPermissionRules removes all rules for a session', () => {
+    const s = store.create()
+    const other = store.create()
+    store.addPermissionRule(s.id, 'Write', 'a.ts')
+    store.addPermissionRule(s.id, 'Edit', 'b.ts')
+    store.addPermissionRule(other.id, 'Write', 'c.ts')
+
+    store.clearPermissionRules(s.id)
+
+    expect(store.listPermissionRules(s.id)).toEqual([])
+    expect(store.listPermissionRules(other.id)).toHaveLength(1)
+  })
+
+  it('listMessages skips rows with invalid content_json', () => {
+    const s = store.create('bad-json')
+    store.appendMessage(s.id, { role: 'user', content: { type: 'text', text: 'ok' } })
+    db.run(
+      'INSERT INTO messages (id, session_id, role, content_json, sort_index, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      ['bad-msg', s.id, 'assistant', '{not-json', 1, Date.now()],
+    )
+    db.persist()
+
+    const msgs = store.listMessages(s.id)
+    expect(msgs).toHaveLength(1)
+    expect(msgs[0]!.role).toBe('user')
+  })
+
   it('persists data across reopen', async () => {
     const s = store.create('persist')
     store.appendMessage(s.id, { role: 'user', content: 'keep me' })
