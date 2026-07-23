@@ -15,6 +15,12 @@ Phone remote console + self-hosted Agent daemon for coding agents.
 - Node.js 20+
 - pnpm 9+
 
+## Agent persistence note
+
+`@mobile-claude/agent` stores sessions/devices in SQLite under `~/.mobile-claude/data.db` (override via config/`DATA_DIR`).
+
+Native `better-sqlite3` failed to compile on Windows without the ClangCL VS toolset, so the daemon uses **sql.js** (WASM) with file export/persist instead. API surface is the same for consumers (`openDb` is async).
+
 ## Scripts
 
 ```bash
