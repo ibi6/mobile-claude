@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { assertInsideWorkspace, toRelative } from '../paths.js'
-import { asRecord, requireString, truncateOutput } from './input.js'
+import { asRecord, requireString, truncateText } from './input.js'
 import { MAX_TOOL_OUTPUT_CHARS, type ToolContext, type ToolResult } from './types.js'
 
 /**
@@ -41,7 +41,11 @@ export async function runGlob(input: unknown, ctx: ToolContext): Promise<ToolRes
   }
 
   matches.sort((a, b) => a.localeCompare(b))
-  return { output: truncateOutput(matches.join('\n'), MAX_TOOL_OUTPUT_CHARS) }
+  const capped = truncateText(matches.join('\n'), MAX_TOOL_OUTPUT_CHARS)
+  return {
+    output: capped.text,
+    ...(capped.truncated ? { truncated: true } : {}),
+  }
 }
 
 function walkMatch(

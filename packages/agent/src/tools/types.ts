@@ -10,6 +10,8 @@ export type ToolContext = {
 /** Standard tool execution result. */
 export type ToolResult = {
   output: string
+  /** True when `output` was capped for size (see MAX_TOOL_OUTPUT_CHARS). */
+  truncated?: boolean
   diff?: {
     path: string
     unifiedDiff: string

@@ -7,7 +7,7 @@ import {
 import fs from 'node:fs'
 import path from 'node:path'
 import { assertInsideWorkspace } from '../paths.js'
-import { asRecord, optionalString, requireString, truncateOutput } from './input.js'
+import { asRecord, optionalString, requireString, truncateText } from './input.js'
 import {
   BASH_TIMEOUT_MS,
   MAX_TOOL_OUTPUT_CHARS,
@@ -49,7 +49,11 @@ export async function runBash(input: unknown, ctx: ToolContext): Promise<ToolRes
     maxOutputChars: MAX_TOOL_OUTPUT_CHARS,
   })
 
-  return { output: truncateOutput(output, MAX_TOOL_OUTPUT_CHARS) }
+  const capped = truncateText(output, MAX_TOOL_OUTPUT_CHARS)
+  return {
+    output: capped.text,
+    ...(capped.truncated ? { truncated: true } : {}),
+  }
 }
 
 function shellInvocation(

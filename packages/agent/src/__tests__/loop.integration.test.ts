@@ -254,6 +254,16 @@ describe('runAgentLoop (mock Anthropic)', () => {
       type: 'assistant',
       toolUses: [{ id: toolId, name: 'Write' }],
     })
+
+    // Spec: audit_log on permission decisions
+    const audits = store.listAudit(10, 'permission')
+    expect(audits.length).toBeGreaterThanOrEqual(1)
+    expect(audits[0]!.detail).toMatchObject({
+      sessionId: session.id,
+      tool: 'Write',
+      decision: 'allow_once',
+      toolRunId: toolId,
+    })
   })
 
   it('deny synthesizes tool_result error and continues', async () => {
@@ -309,6 +319,11 @@ describe('runAgentLoop (mock Anthropic)', () => {
 
     expect(collected.toolsCompleted[0]!.status).toBe('denied')
     expect(store.listToolRuns(session.id)[0]!.status).toBe('denied')
+
+    const audits = store.listAudit(10, 'permission')
+    expect(audits.some((a) => (a.detail as { decision: string }).decision === 'deny')).toBe(
+      true,
+    )
   })
 
   it('allow_session stores rule so second call skips prompt', async () => {

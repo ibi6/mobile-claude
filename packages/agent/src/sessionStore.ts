@@ -58,6 +58,13 @@ export type UpdateToolRunInput = {
   status?: string
 }
 
+export type AuditLogRow = {
+  id: string
+  ts: number
+  kind: string
+  detail: unknown
+}
+
 /** Session + message + permission-rule CRUD on SQLite. */
 export class SessionStore {
   constructor(
@@ -403,6 +410,58 @@ export class SessionStore {
       [messageId],
     )
     return rows.map(parseToolRunRow)
+  }
+
+  /**
+   * Append-only audit event (permission decisions, optional tool events).
+   * Never stores secrets — callers must sanitize `detail`.
+   */
+  appendAudit(kind: string, detail: unknown): AuditLogRow {
+    const row: AuditLogRow = {
+      id: crypto.randomUUID(),
+      ts: Date.now(),
+      kind,
+      detail,
+    }
+    this.db.run(
+      'INSERT INTO audit_log (id, ts, kind, detail_json) VALUES (?, ?, ?, ?)',
+      [row.id, row.ts, row.kind, JSON.stringify(row.detail ?? null)],
+    )
+    this.db.persist()
+    return row
+  }
+
+  listAudit(limit = 100, kind?: string): AuditLogRow[] {
+    const capped = Math.max(1, Math.min(10_000, Math.floor(limit)))
+    const rows = kind
+      ? this.db.all<{
+          id: string
+          ts: number
+          kind: string
+          detail_json: string
+        }>(
+          'SELECT id, ts, kind, detail_json FROM audit_log WHERE kind = ? ORDER BY ts DESC LIMIT ?',
+          [kind, capped],
+        )
+      : this.db.all<{
+          id: string
+          ts: number
+          kind: string
+          detail_json: string
+        }>(
+          'SELECT id, ts, kind, detail_json FROM audit_log ORDER BY ts DESC LIMIT ?',
+          [capped],
+        )
+
+    return rows.map((r) => {
+      let detail: unknown = null
+      try {
+        detail = JSON.parse(r.detail_json) as unknown
+      } catch {
+        detail = r.detail_json
+      }
+      return { id: r.id, ts: r.ts, kind: r.kind, detail }
+    })
   }
 }
 

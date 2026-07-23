@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import { assertInsideWorkspace, toRelative } from '../paths.js'
 import { createUnifiedDiff } from './diff.js'
-import { asRecord, requireString, truncateOutput } from './input.js'
+import { asRecord, requireString, truncateText } from './input.js'
 import {
   MAX_READ_BYTES,
   MAX_TOOL_OUTPUT_CHARS,
@@ -45,8 +45,10 @@ export async function runEdit(input: unknown, ctx: ToolContext): Promise<ToolRes
 
   fs.writeFileSync(abs, after, 'utf8')
 
+  const capped = truncateText(`Edited ${rel}`, MAX_TOOL_OUTPUT_CHARS)
   return {
-    output: truncateOutput(`Edited ${rel}`, MAX_TOOL_OUTPUT_CHARS),
+    output: capped.text,
+    ...(capped.truncated ? { truncated: true } : {}),
     diff: {
       path: rel,
       unifiedDiff: createUnifiedDiff(rel, before, after),

@@ -69,6 +69,8 @@ export type LoopEvents = {
     status: string
     outputSummary: string
     output?: unknown
+    /** True when tool output was capped server-side. */
+    truncated?: boolean
   }) => void
   onDiff: (args: {
     toolRunId: string
@@ -289,6 +291,20 @@ async function executeToolUse(args: ExecuteToolArgs): Promise<void> {
     rules,
   })
 
+  if (decision === 'allow') {
+    const viaRule = rules.some(
+      (r) => r.tool === toolUse.name && r.pattern === pattern,
+    )
+    store.appendAudit('permission', {
+      sessionId,
+      toolRunId,
+      tool: toolUse.name,
+      pattern,
+      risk,
+      decision: viaRule ? 'allow_session_rule' : 'auto_allow',
+    })
+  }
+
   if (decision === 'ask') {
     events.onStatus('awaiting_permission', { model, busy: true })
     const userDecision: UserDecision = await events.onPermissionRequired({
@@ -297,6 +313,16 @@ async function executeToolUse(args: ExecuteToolArgs): Promise<void> {
       name: toolUse.name,
       input: toolUse.input,
       risk,
+    })
+
+    store.appendAudit('permission', {
+      sessionId,
+      toolRunId,
+      requestId,
+      tool: toolUse.name,
+      pattern,
+      risk,
+      decision: userDecision,
     })
 
     if (userDecision === 'deny') {
@@ -327,6 +353,7 @@ async function executeToolUse(args: ExecuteToolArgs): Promise<void> {
       status: 'completed',
       output: {
         output: result.output,
+        ...(result.truncated ? { truncated: true } : {}),
         ...(result.diff ? { diff: result.diff } : {}),
       },
     })
@@ -346,6 +373,7 @@ async function executeToolUse(args: ExecuteToolArgs): Promise<void> {
       status: 'completed',
       outputSummary: truncateSummary(result.output, 200),
       output: result.output,
+      ...(result.truncated ? { truncated: true } : {}),
     })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)

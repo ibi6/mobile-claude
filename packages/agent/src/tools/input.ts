@@ -41,13 +41,30 @@ export function optionalPositiveInt(
   return v
 }
 
-/** Truncate large tool outputs for model + client safety. */
+export type TruncatedText = {
+  text: string
+  truncated: boolean
+}
+
+/**
+ * Truncate large tool outputs for model + client safety.
+ * Returns both the (possibly capped) text and a `truncated` flag.
+ */
+export function truncateText(
+  text: string,
+  maxChars: number,
+  suffix = '\n[truncated]',
+): TruncatedText {
+  if (text.length <= maxChars) return { text, truncated: false }
+  const keep = Math.max(0, maxChars - suffix.length)
+  return { text: text.slice(0, keep) + suffix, truncated: true }
+}
+
+/** Truncate large tool outputs (text only). Prefer `truncateText` when a flag is needed. */
 export function truncateOutput(
   text: string,
   maxChars: number,
   suffix = '\n[truncated]',
 ): string {
-  if (text.length <= maxChars) return text
-  const keep = Math.max(0, maxChars - suffix.length)
-  return text.slice(0, keep) + suffix
+  return truncateText(text, maxChars, suffix).text
 }

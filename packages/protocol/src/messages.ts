@@ -202,6 +202,8 @@ export const ToolCompletedPayloadSchema = z.object({
   status: z.string().min(1),
   outputSummary: z.string(),
   output: z.unknown().optional(),
+  /** True when tool output was truncated server-side for size. */
+  truncated: z.boolean().optional(),
 })
 export type ToolCompletedPayload = z.infer<typeof ToolCompletedPayloadSchema>
 

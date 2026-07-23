@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import { assertInsideWorkspace, toRelative } from '../paths.js'
-import { asRecord, optionalPositiveInt, requireString, truncateOutput } from './input.js'
+import { asRecord, optionalPositiveInt, requireString, truncateText } from './input.js'
 import {
   MAX_READ_BYTES,
   MAX_TOOL_OUTPUT_CHARS,
@@ -53,5 +53,9 @@ export async function runRead(input: unknown, ctx: ToolContext): Promise<ToolRes
     }
   }
 
-  return { output: truncateOutput(text, MAX_TOOL_OUTPUT_CHARS) }
+  const capped = truncateText(text, MAX_TOOL_OUTPUT_CHARS)
+  return {
+    output: capped.text,
+    ...(capped.truncated ? { truncated: true } : {}),
+  }
 }

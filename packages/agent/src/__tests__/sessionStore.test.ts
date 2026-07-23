@@ -157,4 +157,31 @@ describe('SessionStore', () => {
     expect(store.listMessages(s.id)).toHaveLength(1)
     expect(store.findPermissionRule(s.id, 'Edit', 'pkg/x.ts')).toBeTruthy()
   })
+
+  it('appendAudit / listAudit round-trip permission decisions', () => {
+    const s = store.create('audit')
+    store.appendAudit('permission', {
+      sessionId: s.id,
+      tool: 'Write',
+      decision: 'allow_once',
+    })
+    store.appendAudit('permission', {
+      sessionId: s.id,
+      tool: 'Read',
+      decision: 'auto_allow',
+    })
+    store.appendAudit('tool', { sessionId: s.id, name: 'Bash' })
+
+    const perms = store.listAudit(10, 'permission')
+    expect(perms).toHaveLength(2)
+    expect(perms.map((r) => (r.detail as { decision: string }).decision).sort()).toEqual([
+      'allow_once',
+      'auto_allow',
+    ])
+    expect(perms.every((r) => r.kind === 'permission')).toBe(true)
+    expect(perms[0]!.ts).toBeGreaterThanOrEqual(perms[1]!.ts)
+
+    const all = store.listAudit(10)
+    expect(all).toHaveLength(3)
+  })
 })

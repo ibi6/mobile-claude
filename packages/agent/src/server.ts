@@ -611,16 +611,14 @@ export async function startServer(
 
     const now = Date.now()
     pruneChatIdem(now)
+    // Spec §4.4: duplicate client envelope id within 5 min is ignored if already accepted
     if (chatIdem.has(env.id)) {
-      // Idempotent: already accepted
       return
     }
-    chatIdem.set(env.id, now)
 
     const { sessionId, text } = parsed.data
     const session = store.get(sessionId)
     if (!session) {
-      chatIdem.delete(env.id)
       sendError(conn.ws, 'not_found', `session not found: ${sessionId}`, {
         replyTo: env.id,
         sessionId,
@@ -648,6 +646,9 @@ export async function startServer(
       )
       return
     }
+
+    // Mark accepted only after validation — failures must remain retriable
+    chatIdem.set(env.id, now)
 
     const abort = new AbortController()
     rt.abort = abort
@@ -744,6 +745,7 @@ export async function startServer(
         status: string
         outputSummary: string
         output?: unknown
+        truncated?: boolean
       }) => {
         pushLive(
           createEnvelope(
@@ -753,6 +755,7 @@ export async function startServer(
               status: args.status,
               outputSummary: args.outputSummary,
               ...(args.output !== undefined ? { output: args.output } : {}),
+              ...(args.truncated ? { truncated: true } : {}),
             },
             { sessionId },
           ),

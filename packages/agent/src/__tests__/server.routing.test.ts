@@ -318,6 +318,25 @@ describe('WebSocket server routing', () => {
     const read = await nextMessage(ws)
     expect(read.type).toBe('fs.read_result')
     expect((read.payload as { content: string }).content).toContain('hi from workspace')
+    expect((read.payload as { truncated: boolean }).truncated).toBe(false)
+
+    // Large file preview carries truncated: true
+    const big = path.join(workspace, 'big.txt')
+    fs.writeFileSync(big, 'Z'.repeat(500))
+    sendJson(
+      ws,
+      createEnvelope('fs.read', { path: 'big.txt', maxBytes: 50 }),
+    )
+    const truncatedRead = await nextMessage(ws)
+    expect(truncatedRead.type).toBe('fs.read_result')
+    const tr = truncatedRead.payload as {
+      content: string
+      truncated: boolean
+      size: number
+    }
+    expect(tr.truncated).toBe(true)
+    expect(tr.size).toBe(500)
+    expect(tr.content.length).toBeLessThanOrEqual(50)
 
     ws.close()
   })

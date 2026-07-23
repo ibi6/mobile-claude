@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { assertInsideWorkspace, toRelative } from '../paths.js'
 import { createUnifiedDiff } from './diff.js'
-import { asRecord, requireString, truncateOutput } from './input.js'
+import { asRecord, requireString, truncateText } from './input.js'
 import {
   MAX_READ_BYTES,
   MAX_TOOL_OUTPUT_CHARS,
@@ -36,11 +36,13 @@ export async function runWrite(input: unknown, ctx: ToolContext): Promise<ToolRe
   const unifiedDiff = createUnifiedDiff(rel, before ?? '', after)
   const created = before === undefined
 
+  const capped = truncateText(
+    created ? `Wrote ${rel}` : `Updated ${rel}`,
+    MAX_TOOL_OUTPUT_CHARS,
+  )
   return {
-    output: truncateOutput(
-      created ? `Wrote ${rel}` : `Updated ${rel}`,
-      MAX_TOOL_OUTPUT_CHARS,
-    ),
+    output: capped.text,
+    ...(capped.truncated ? { truncated: true } : {}),
     diff: {
       path: rel,
       unifiedDiff,

@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { assertInsideWorkspace, toRelative, PathEscapeError } from '../paths.js'
 import { matchGlob } from './glob.js'
-import { asRecord, optionalString, requireString, truncateOutput } from './input.js'
+import { asRecord, optionalString, requireString, truncateText } from './input.js'
 import {
   MAX_READ_BYTES,
   MAX_TOOL_OUTPUT_CHARS,
@@ -40,7 +40,11 @@ export async function runGrep(input: unknown, ctx: ToolContext): Promise<ToolRes
 
   const rgOut = await tryRipgrep(pattern, searchRoot, globFilter, ctx)
   if (rgOut !== null) {
-    return { output: truncateOutput(rgOut, MAX_TOOL_OUTPUT_CHARS) }
+    const capped = truncateText(rgOut, MAX_TOOL_OUTPUT_CHARS)
+    return {
+      output: capped.text,
+      ...(capped.truncated ? { truncated: true } : {}),
+    }
   }
 
   if (ctx.signal?.aborted) {
@@ -48,7 +52,11 @@ export async function runGrep(input: unknown, ctx: ToolContext): Promise<ToolRes
   }
 
   const lines = tsGrep(pattern, searchRoot, globFilter, ctx)
-  return { output: truncateOutput(lines.join('\n'), MAX_TOOL_OUTPUT_CHARS) }
+  const capped = truncateText(lines.join('\n'), MAX_TOOL_OUTPUT_CHARS)
+  return {
+    output: capped.text,
+    ...(capped.truncated ? { truncated: true } : {}),
+  }
 }
 
 function killRg(child: ChildProcess): void {

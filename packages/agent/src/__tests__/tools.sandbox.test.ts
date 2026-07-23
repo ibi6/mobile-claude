@@ -4,10 +4,10 @@ import os from 'node:os'
 import path from 'node:path'
 import { PathEscapeError } from '../paths'
 import { spawnCollect } from '../tools/bash'
-import { truncateOutput } from '../tools/input'
+import { truncateOutput, truncateText } from '../tools/input'
 import { runTool, anthropicToolDefinitions } from '../tools/registry'
 import type { ToolContext } from '../tools/types'
-import { MAX_READ_BYTES } from '../tools/types'
+import { MAX_READ_BYTES, MAX_TOOL_OUTPUT_CHARS } from '../tools/types'
 
 function makeCtx(workspaceRoot: string, shell: ToolContext['shell'] = 'powershell'): ToolContext {
   return { workspaceRoot, shell }
@@ -146,6 +146,28 @@ describe('tools sandbox', () => {
     // keep = max - '\n[truncated]'.length = 8
     expect(out).toBe('abcdefgh\n[truncated]')
     expect(truncateOutput('short', 100)).toBe('short')
+  })
+
+  it('truncateText sets truncated flag when capped', () => {
+    const capped = truncateText('abcdefghijklmnopqrstuvwxyz', 20)
+    expect(capped.truncated).toBe(true)
+    expect(capped.text.endsWith('\n[truncated]')).toBe(true)
+    expect(truncateText('short', 100)).toEqual({
+      text: 'short',
+      truncated: false,
+    })
+  })
+
+  it('Read tool result sets truncated when content exceeds max', async () => {
+    const ctx = makeCtx(root)
+    const bigPath = path.join(root, 'big.txt')
+    // Under MAX_READ_BYTES (1_000_000) but over MAX_TOOL_OUTPUT_CHARS (200_000)
+    const size = Math.min(MAX_TOOL_OUTPUT_CHARS + 50_000, 900_000)
+    fs.writeFileSync(bigPath, 'x'.repeat(size))
+    const result = await runTool('Read', { path: 'big.txt' }, ctx)
+    expect(result.truncated).toBe(true)
+    expect(result.output.endsWith('\n[truncated]')).toBe(true)
+    expect(result.output.length).toBe(MAX_TOOL_OUTPUT_CHARS)
   })
 
   it('spawnCollect times out and kills process (injectable short timeout)', async () => {
