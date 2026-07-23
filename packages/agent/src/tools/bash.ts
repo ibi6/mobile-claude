@@ -1,4 +1,9 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import {
+  execFileSync,
+  spawn,
+  type ChildProcess,
+  type ChildProcessWithoutNullStreams,
+} from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { assertInsideWorkspace } from '../paths.js'
@@ -41,6 +46,7 @@ export async function runBash(input: unknown, ctx: ToolContext): Promise<ToolRes
     cwd,
     signal: ctx.signal,
     timeoutMs: BASH_TIMEOUT_MS,
+    maxOutputChars: MAX_TOOL_OUTPUT_CHARS,
   })
 
   return { output: truncateOutput(output, MAX_TOOL_OUTPUT_CHARS) }
@@ -70,20 +76,75 @@ function shellInvocation(
   }
 }
 
-type SpawnCollectArgs = {
+export type SpawnCollectArgs = {
   executable: string
   args: string[]
   cwd: string
   signal?: AbortSignal
   timeoutMs: number
+  /** Cap collected stdout/stderr growth (chars). Defaults to MAX_TOOL_OUTPUT_CHARS. */
+  maxOutputChars?: number
 }
 
-function spawnCollect(opts: SpawnCollectArgs): Promise<string> {
+/**
+ * Kill a child and its process tree.
+ * Windows: `taskkill /pid <pid> /T /F` then force `child.kill()`.
+ * Unix: SIGKILL on the child (and process group when possible).
+ */
+export function killChildProcessTree(child: ChildProcess): void {
+  const pid = child.pid
+  if (pid === undefined) return
+
+  if (process.platform === 'win32') {
+    try {
+      // Sync so the tree is gone before we settle (avoids locked cwd on Windows)
+      execFileSync('taskkill', ['/pid', String(pid), '/T', '/F'], {
+        windowsHide: true,
+        stdio: 'ignore',
+      })
+    } catch {
+      // fall through to force kill
+    }
+    try {
+      child.kill()
+    } catch {
+      // ignore
+    }
+    return
+  }
+
+  try {
+    // Negative PID = process group (only works if child started in its own group)
+    process.kill(-pid, 'SIGKILL')
+  } catch {
+    try {
+      child.kill('SIGKILL')
+    } catch {
+      // ignore
+    }
+  }
+}
+
+/** Append chunk into buf, never growing past maxChars. */
+function appendCapped(buf: string, chunk: string, maxChars: number): string {
+  if (buf.length >= maxChars) return buf
+  const room = maxChars - buf.length
+  if (chunk.length <= room) return buf + chunk
+  return buf + chunk.slice(0, room)
+}
+
+/**
+ * Spawn a process and collect stdout/stderr with timeout, abort, and memory bounds.
+ * Exported for short-timeout kill tests.
+ */
+export function spawnCollect(opts: SpawnCollectArgs): Promise<string> {
   return new Promise((resolve, reject) => {
     if (opts.signal?.aborted) {
       reject(new Error('Bash aborted'))
       return
     }
+
+    const maxChars = opts.maxOutputChars ?? MAX_TOOL_OUTPUT_CHARS
 
     let child: ChildProcessWithoutNullStreams
     try {
@@ -103,43 +164,54 @@ function spawnCollect(opts: SpawnCollectArgs): Promise<string> {
     let stderr = ''
     let settled = false
 
-    const onAbort = () => {
+    const destroyStreams = () => {
       try {
-        child.kill('SIGTERM')
+        child.stdout.destroy()
       } catch {
         // ignore
       }
-      finish(() => reject(new Error('Bash aborted')))
+      try {
+        child.stderr.destroy()
+      } catch {
+        // ignore
+      }
+      try {
+        child.stdin.destroy()
+      } catch {
+        // ignore
+      }
     }
-
-    const timer = setTimeout(() => {
-      try {
-        child.kill('SIGTERM')
-      } catch {
-        // ignore
-      }
-      finish(() =>
-        reject(new Error(`Bash timed out after ${opts.timeoutMs}ms`)),
-      )
-    }, opts.timeoutMs)
 
     const finish = (fn: () => void) => {
       if (settled) return
       settled = true
       clearTimeout(timer)
       opts.signal?.removeEventListener('abort', onAbort)
+      destroyStreams()
       fn()
     }
+
+    const onAbort = () => {
+      killChildProcessTree(child)
+      finish(() => reject(new Error('Bash aborted')))
+    }
+
+    const timer = setTimeout(() => {
+      killChildProcessTree(child)
+      finish(() =>
+        reject(new Error(`Bash timed out after ${opts.timeoutMs}ms`)),
+      )
+    }, opts.timeoutMs)
 
     opts.signal?.addEventListener('abort', onAbort, { once: true })
 
     child.stdout.setEncoding('utf8')
     child.stderr.setEncoding('utf8')
     child.stdout.on('data', (chunk: string) => {
-      stdout += chunk
+      stdout = appendCapped(stdout, chunk, maxChars)
     })
     child.stderr.on('data', (chunk: string) => {
-      stderr += chunk
+      stderr = appendCapped(stderr, chunk, maxChars)
     })
 
     child.on('error', (err) => {

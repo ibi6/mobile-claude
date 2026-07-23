@@ -2,7 +2,12 @@ import fs from 'node:fs'
 import { assertInsideWorkspace, toRelative } from '../paths.js'
 import { createUnifiedDiff } from './diff.js'
 import { asRecord, requireString, truncateOutput } from './input.js'
-import { MAX_TOOL_OUTPUT_CHARS, type ToolContext, type ToolResult } from './types.js'
+import {
+  MAX_READ_BYTES,
+  MAX_TOOL_OUTPUT_CHARS,
+  type ToolContext,
+  type ToolResult,
+} from './types.js'
 
 export async function runEdit(input: unknown, ctx: ToolContext): Promise<ToolResult> {
   const obj = asRecord(input)
@@ -19,6 +24,13 @@ export async function runEdit(input: unknown, ctx: ToolContext): Promise<ToolRes
 
   if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) {
     throw new Error(`Edit failed: file not found: ${rel}`)
+  }
+
+  const stat = fs.statSync(abs)
+  if (stat.size > MAX_READ_BYTES) {
+    throw new Error(
+      `Edit failed: file exceeds max size (${stat.size} > ${MAX_READ_BYTES} bytes)`,
+    )
   }
 
   const before = fs.readFileSync(abs, 'utf8')

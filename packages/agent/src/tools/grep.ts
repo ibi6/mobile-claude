@@ -1,10 +1,18 @@
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { assertInsideWorkspace, toRelative, PathEscapeError } from '../paths.js'
 import { matchGlob } from './glob.js'
 import { asRecord, optionalString, requireString, truncateOutput } from './input.js'
-import { MAX_TOOL_OUTPUT_CHARS, type ToolContext, type ToolResult } from './types.js'
+import {
+  MAX_READ_BYTES,
+  MAX_TOOL_OUTPUT_CHARS,
+  type ToolContext,
+  type ToolResult,
+} from './types.js'
+
+/** Ripgrep process timeout (ms). */
+export const GREP_TIMEOUT_MS = 60_000
 
 /**
  * Content search under workspace.
@@ -26,13 +34,55 @@ export async function runGrep(input: unknown, ctx: ToolContext): Promise<ToolRes
   // Ensure directory or file stays inside workspace
   assertInsideWorkspace(ctx.workspaceRoot, searchRoot)
 
+  if (ctx.signal?.aborted) {
+    throw new Error('Grep aborted')
+  }
+
   const rgOut = await tryRipgrep(pattern, searchRoot, globFilter, ctx)
   if (rgOut !== null) {
     return { output: truncateOutput(rgOut, MAX_TOOL_OUTPUT_CHARS) }
   }
 
+  if (ctx.signal?.aborted) {
+    throw new Error('Grep aborted')
+  }
+
   const lines = tsGrep(pattern, searchRoot, globFilter, ctx)
   return { output: truncateOutput(lines.join('\n'), MAX_TOOL_OUTPUT_CHARS) }
+}
+
+function killRg(child: ChildProcess): void {
+  const pid = child.pid
+  if (pid === undefined) return
+  if (process.platform === 'win32') {
+    try {
+      const killer = spawn('taskkill', ['/pid', String(pid), '/T', '/F'], {
+        windowsHide: true,
+        stdio: 'ignore',
+      })
+      killer.unref()
+    } catch {
+      // fall through
+    }
+    try {
+      child.kill()
+    } catch {
+      // ignore
+    }
+    return
+  }
+  try {
+    child.kill('SIGKILL')
+  } catch {
+    // ignore
+  }
+}
+
+function appendCapped(buf: string, chunk: string, maxChars: number): string {
+  if (buf.length >= maxChars) return buf
+  const room = maxChars - buf.length
+  if (chunk.length <= room) return buf + chunk
+  return buf + chunk.slice(0, room)
 }
 
 async function tryRipgrep(
@@ -49,13 +99,34 @@ async function tryRipgrep(
 
   return new Promise((resolve) => {
     let settled = false
+    let child: ChildProcess | undefined
+    let timer: ReturnType<typeof setTimeout> | undefined
+
+    const onAbort = () => {
+      if (child) killRg(child)
+      finish(null)
+    }
+
     const finish = (value: string | null) => {
       if (settled) return
       settled = true
+      if (timer !== undefined) clearTimeout(timer)
+      ctx.signal?.removeEventListener('abort', onAbort)
+      if (child) {
+        try {
+          child.stdout?.destroy()
+        } catch {
+          // ignore
+        }
+        try {
+          child.stderr?.destroy()
+        } catch {
+          // ignore
+        }
+      }
       resolve(value)
     }
 
-    let child
     try {
       child = spawn('rg', args, {
         cwd: ctx.workspaceRoot,
@@ -66,25 +137,39 @@ async function tryRipgrep(
       return
     }
 
+    timer = setTimeout(() => {
+      if (child) killRg(child)
+      // Timed out — fall back to TS grep rather than hang forever
+      finish(null)
+    }, GREP_TIMEOUT_MS)
+
+    if (ctx.signal?.aborted) {
+      killRg(child)
+      finish(null)
+      return
+    }
+    ctx.signal?.addEventListener('abort', onAbort, { once: true })
+
     let stdout = ''
     let stderr = ''
     child.stdout?.setEncoding('utf8')
     child.stderr?.setEncoding('utf8')
     child.stdout?.on('data', (chunk: string) => {
-      stdout += chunk
+      stdout = appendCapped(stdout, chunk, MAX_TOOL_OUTPUT_CHARS)
     })
     child.stderr?.on('data', (chunk: string) => {
-      stderr += chunk
+      stderr = appendCapped(stderr, chunk, MAX_TOOL_OUTPUT_CHARS)
     })
     child.on('error', () => finish(null))
     child.on('close', (code) => {
       // rg: 0 matches, 1 no matches, 2 error
       if (code === 0 || code === 1) {
-        // Rewrite absolute paths to workspace-relative where possible
+        // Rewrite absolute paths to workspace-relative; discard escapes
         const normalized = stdout
           .split('\n')
           .filter((l) => l.length > 0)
           .map((line) => relativizeRgLine(line, ctx))
+          .filter((line): line is string => line !== null)
           .join('\n')
         finish(normalized)
         return
@@ -95,7 +180,11 @@ async function tryRipgrep(
   })
 }
 
-function relativizeRgLine(line: string, ctx: ToolContext): string {
+/**
+ * Parse an rg line and rewrite path to workspace-relative.
+ * Returns null if the path escapes the workspace (discard, do not leak absolute path).
+ */
+function relativizeRgLine(line: string, ctx: ToolContext): string | null {
   // format: path:line:content  (Windows may include drive letters)
   const m = line.match(/^(.*?):(\d+):(.*)$/)
   if (!m) return line
@@ -110,7 +199,8 @@ function relativizeRgLine(line: string, ctx: ToolContext): string {
     const rel = toRelative(ctx.workspaceRoot, safe)
     return `${rel}:${lineNo}:${content}`
   } catch {
-    return line
+    // Outside workspace — discard instead of returning raw escaped path
+    return null
   }
 }
 
@@ -140,6 +230,10 @@ function tsGrep(
   return results
 }
 
+function resultsFull(results: string[]): boolean {
+  return results.join('\n').length >= MAX_TOOL_OUTPUT_CHARS
+}
+
 function walk(
   dir: string,
   regex: RegExp,
@@ -147,6 +241,8 @@ function walk(
   ctx: ToolContext,
   results: string[],
 ): void {
+  if (resultsFull(results) || ctx.signal?.aborted) return
+
   let entries: fs.Dirent[]
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true })
@@ -155,6 +251,7 @@ function walk(
   }
 
   for (const ent of entries) {
+    if (resultsFull(results) || ctx.signal?.aborted) return
     // Skip common heavy/irrelevant dirs
     if (ent.name === 'node_modules' || ent.name === '.git') continue
     const abs = path.join(dir, ent.name)
@@ -179,6 +276,8 @@ function grepFile(
   ctx: ToolContext,
   results: string[],
 ): void {
+  if (resultsFull(results) || ctx.signal?.aborted) return
+
   let rel: string
   try {
     const safe = assertInsideWorkspace(ctx.workspaceRoot, abs)
@@ -193,6 +292,9 @@ function grepFile(
 
   let content: string
   try {
+    const stat = fs.statSync(abs)
+    // Skip huge files (align with Read limit)
+    if (stat.size > MAX_READ_BYTES) return
     const buf = fs.readFileSync(abs)
     // Skip likely binary
     if (buf.includes(0)) return
@@ -203,6 +305,7 @@ function grepFile(
 
   const lines = content.split('\n')
   for (let i = 0; i < lines.length; i++) {
+    if (resultsFull(results)) return
     const line = lines[i]!
     if (regex.test(line)) {
       results.push(`${rel}:${i + 1}:${line}`)

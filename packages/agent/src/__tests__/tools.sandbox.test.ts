@@ -3,8 +3,11 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { PathEscapeError } from '../paths'
+import { spawnCollect } from '../tools/bash'
+import { truncateOutput } from '../tools/input'
 import { runTool, anthropicToolDefinitions } from '../tools/registry'
 import type { ToolContext } from '../tools/types'
+import { MAX_READ_BYTES } from '../tools/types'
 
 function makeCtx(workspaceRoot: string, shell: ToolContext['shell'] = 'powershell'): ToolContext {
   return { workspaceRoot, shell }
@@ -133,4 +136,76 @@ describe('tools sandbox', () => {
       expect(d.input_schema.properties).toBeDefined()
     }
   })
+
+  it('truncateOutput caps at maxChars with suffix', () => {
+    const max = 20
+    const text = 'abcdefghijklmnopqrstuvwxyz'
+    const out = truncateOutput(text, max)
+    expect(out.endsWith('\n[truncated]')).toBe(true)
+    expect(out.length).toBe(max)
+    // keep = max - '\n[truncated]'.length = 8
+    expect(out).toBe('abcdefgh\n[truncated]')
+    expect(truncateOutput('short', 100)).toBe('short')
+  })
+
+  it('spawnCollect times out and kills process (injectable short timeout)', async () => {
+    const isWin = process.platform === 'win32'
+    const executable = isWin ? 'powershell.exe' : 'bash'
+    const args = isWin
+      ? ['-NoProfile', '-NonInteractive', '-Command', 'Start-Sleep -Seconds 30']
+      : ['-c', 'sleep 30']
+
+    // Use os.tmpdir() so a lagging kill cannot lock the test workspace root
+    const started = Date.now()
+    await expect(
+      spawnCollect({
+        executable,
+        args,
+        cwd: os.tmpdir(),
+        timeoutMs: 400,
+        maxOutputChars: 1024,
+      }),
+    ).rejects.toThrow(/timed out after 400ms/)
+    const elapsed = Date.now() - started
+    // Should not wait for the full 30s sleep
+    expect(elapsed).toBeLessThan(15_000)
+  }, 20_000)
+
+  it('Write path escape denied', async () => {
+    const ctx = makeCtx(root)
+    await expect(
+      runTool('Write', { path: '../escape.txt', content: 'x' }, ctx),
+    ).rejects.toThrow(PathEscapeError)
+  })
+
+  it('Edit path escape denied', async () => {
+    const ctx = makeCtx(root)
+    await expect(
+      runTool(
+        'Edit',
+        { path: '../escape.txt', old_string: 'a', new_string: 'b' },
+        ctx,
+      ),
+    ).rejects.toThrow(PathEscapeError)
+  })
+
+  it('Edit rejects oversized file before full read', async () => {
+    const ctx = makeCtx(root)
+    const big = path.join(root, 'huge.bin')
+    // Create sparse-ish file just over MAX_READ_BYTES without filling memory with content in JS
+    const fd = fs.openSync(big, 'w')
+    try {
+      fs.ftruncateSync(fd, MAX_READ_BYTES + 1)
+    } finally {
+      fs.closeSync(fd)
+    }
+    await expect(
+      runTool(
+        'Edit',
+        { path: 'huge.bin', old_string: 'a', new_string: 'b' },
+        ctx,
+      ),
+    ).rejects.toThrow(/exceeds max size/)
+  })
 })
+
