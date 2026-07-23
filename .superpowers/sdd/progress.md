@@ -22,3 +22,11 @@ Task 6: complete (feat(agent): anthropic streaming tool loop — client + loop +
 Task 6: complete (commit c536310, 68 tests)
 
 Task 7: complete (feat(agent): websocket server and CLI — startServer + mobile-claude-agent, 78 tests)
+
+Task 7: complete (commit fc01be2, 78 tests)
+
+Task 8: complete (commit 5da99df)
+
+Task 9: complete (commit f6b1a04)
+
+Task 10: complete (feat(mobile): chat streaming and tool cards)
