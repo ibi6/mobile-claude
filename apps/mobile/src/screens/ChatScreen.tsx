@@ -155,6 +155,19 @@ function sameSession(env: Envelope, sessionId: string): boolean {
   return false;
 }
 
+/** Match `/model` / `/clear` at start (space or end after command). */
+const SLASH_CMD_RE = /^\/(model|clear)(\s|$)/;
+
+function parseSlashCommand(
+  text: string,
+): { command: 'model' | 'clear'; args?: string } | null {
+  const m = text.match(SLASH_CMD_RE);
+  if (!m) return null;
+  const command = m[1] as 'model' | 'clear';
+  const rest = text.slice(m[0].length).trim();
+  return { command, args: rest.length > 0 ? rest : undefined };
+}
+
 /**
  * Chat: open snapshot on focus, stream deltas, tool cards, abort.
  */
@@ -507,23 +520,68 @@ export function ChatScreen({ navigation, route }: Props) {
     setError(null);
     setDraft('');
 
-    const localId = newLocalId('local-user');
-    setTimeline((prev) => [
-      ...prev,
-      { kind: 'message', id: localId, role: 'user', text },
-    ]);
-    setBusy(true);
-    setPhase('thinking');
+    const slash = parseSlashCommand(text);
 
     try {
       if (connStatus !== 'authenticated') {
         await reconnect();
       }
+
+      if (slash) {
+        // /model and /clear → slash.run (not chat.send)
+        const payload: {
+          sessionId: string;
+          command: 'model' | 'clear';
+          args?: string;
+        } = {
+          sessionId,
+          command: slash.command,
+        };
+        if (slash.args !== undefined) {
+          payload.args = slash.args;
+        }
+        client.send('slash.run', payload, sessionId);
+
+        // Local feedback; /clear will be replaced by empty session.snapshot
+        if (slash.command === 'clear') {
+          setTimeline([]);
+          setDiffsByTool({});
+          setActiveDiff(null);
+          setPendingPermission(null);
+        } else if (slash.command === 'model') {
+          const note = slash.args
+            ? `已请求切换模型：${slash.args}`
+            : '用法：/model <模型名>';
+          setTimeline((prev) => [
+            ...prev,
+            {
+              kind: 'message',
+              id: newLocalId('local-system'),
+              role: 'system',
+              text: note,
+            },
+          ]);
+          if (slash.args) {
+            setModel(slash.args);
+          }
+        }
+        return;
+      }
+
+      const localId = newLocalId('local-user');
+      setTimeline((prev) => [
+        ...prev,
+        { kind: 'message', id: localId, role: 'user', text },
+      ]);
+      setBusy(true);
+      setPhase('thinking');
       client.send('chat.send', { sessionId, text }, sessionId);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
-      setBusy(false);
-      setPhase('idle');
+      if (!slash) {
+        setBusy(false);
+        setPhase('idle');
+      }
       // Keep optimistic user bubble; mark error visibly
     } finally {
       setSending(false);
