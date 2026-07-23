@@ -159,6 +159,8 @@ export async function startServer(
   const sessionRuntime = new Map<string, SessionRuntime>()
   /** Recent chat.send envelope ids → acceptedAt (idempotency). */
   const chatIdem = new Map<string, number>()
+  /** Authenticated sockets — used for reconnect fan-out of live events. */
+  const authenticatedConns = new Set<ClientConn>()
 
   const loopFn = opts.runLoop ?? runAgentLoop
 
@@ -228,23 +230,55 @@ export async function startServer(
     }
   }
 
+  function permissionPayload(p: PendingPermission): PermissionRequestPayload {
+    return {
+      requestId: p.request.requestId,
+      toolRunId: p.request.toolRunId,
+      name: p.request.name,
+      input: p.request.input,
+      risk: p.request.risk,
+    }
+  }
+
+  /** Re-deliver pending permission.request for one session (session.open). */
   function resendPendingPermission(ws: WebSocket, sessionId: string): void {
     for (const p of pendingPermissions.values()) {
       if (p.sessionId === sessionId) {
         send(
           ws,
-          createEnvelope(
-            'permission.request',
-            {
-              requestId: p.request.requestId,
-              toolRunId: p.request.toolRunId,
-              name: p.request.name,
-              input: p.request.input,
-              risk: p.request.risk,
-            } satisfies PermissionRequestPayload,
-            { sessionId },
-          ),
+          createEnvelope('permission.request', permissionPayload(p), {
+            sessionId,
+          }),
         )
+      }
+    }
+  }
+
+  /** Re-deliver every pending permission.request (re-auth.hello after WS drop). */
+  function resendAllPendingPermissions(ws: WebSocket): void {
+    for (const p of pendingPermissions.values()) {
+      send(
+        ws,
+        createEnvelope('permission.request', permissionPayload(p), {
+          sessionId: p.sessionId,
+        }),
+      )
+    }
+  }
+
+  /**
+   * Push an envelope to a preferred socket if still open; otherwise any
+   * authenticated client. Survives mobile background WS drops mid-turn.
+   */
+  function pushLive(env: Envelope, preferred?: WebSocket): void {
+    if (preferred && preferred.readyState === WebSocket.OPEN) {
+      send(preferred, env)
+      return
+    }
+    for (const c of authenticatedConns) {
+      if (c.authenticated && c.ws.readyState === WebSocket.OPEN) {
+        send(c.ws, env)
+        return
       }
     }
   }
@@ -292,6 +326,12 @@ export async function startServer(
 
     ws.on('error', (err) => {
       console.error('[server] ws error:', err instanceof Error ? err.message : err)
+    })
+
+    ws.on('close', () => {
+      authenticatedConns.delete(conn)
+      conn.authenticated = false
+      conn.deviceId = null
     })
   })
 
@@ -399,6 +439,7 @@ export async function startServer(
       const result = auth.pair(parsed.data.code, parsed.data.deviceName)
       conn.authenticated = true
       conn.deviceId = result.deviceId
+      authenticatedConns.add(conn)
 
       send(
         conn.ws,
@@ -440,6 +481,7 @@ export async function startServer(
 
     conn.authenticated = true
     conn.deviceId = deviceId
+    authenticatedConns.add(conn)
 
     send(
       conn.ws,
@@ -449,6 +491,9 @@ export async function startServer(
         serverVersion: SERVER_VERSION,
       }),
     )
+
+    // Spec §5.4: pending permission.request survives reconnect — re-deliver on re-hello.
+    resendAllPendingPermissions(conn.ws)
   }
 
   function handleSessionList(conn: ClientConn, env: Envelope): void {
@@ -610,8 +655,10 @@ export async function startServer(
     rt.phase = 'thinking'
     rt.model = session.model || runtime.defaultModel
 
-    send(
-      conn.ws,
+    // Capture preferred socket at start; pushLive falls back after reconnect.
+    const originWs = conn.ws
+
+    pushLive(
       createEnvelope(
         'status',
         {
@@ -621,17 +668,18 @@ export async function startServer(
         } satisfies StatusPayload,
         { sessionId },
       ),
+      originWs,
     )
 
     const events = {
       onDelta: (delta: string, messageId: string) => {
-        send(
-          conn.ws,
+        pushLive(
           createEnvelope(
             'message.delta',
             { messageId, role: 'assistant' as const, text: delta },
             { sessionId },
           ),
+          originWs,
         )
       },
       onToolStarted: (args: {
@@ -640,8 +688,7 @@ export async function startServer(
         inputSummary: string
         input: unknown
       }) => {
-        send(
-          conn.ws,
+        pushLive(
           createEnvelope(
             'tool.started',
             {
@@ -652,6 +699,7 @@ export async function startServer(
             },
             { sessionId },
           ),
+          originWs,
         )
       },
       onPermissionRequired: (req: PermissionRequest): Promise<UserDecision> => {
@@ -675,8 +723,7 @@ export async function startServer(
             timer,
           })
 
-          send(
-            conn.ws,
+          pushLive(
             createEnvelope(
               'permission.request',
               {
@@ -688,6 +735,7 @@ export async function startServer(
               } satisfies PermissionRequestPayload,
               { sessionId },
             ),
+            originWs,
           )
         })
       },
@@ -697,8 +745,7 @@ export async function startServer(
         outputSummary: string
         output?: unknown
       }) => {
-        send(
-          conn.ws,
+        pushLive(
           createEnvelope(
             'tool.completed',
             {
@@ -709,6 +756,7 @@ export async function startServer(
             },
             { sessionId },
           ),
+          originWs,
         )
       },
       onDiff: (args: {
@@ -718,8 +766,7 @@ export async function startServer(
         after?: string
         unifiedDiff: string
       }) => {
-        send(
-          conn.ws,
+        pushLive(
           createEnvelope(
             'diff.available',
             {
@@ -731,14 +778,14 @@ export async function startServer(
             },
             { sessionId },
           ),
+          originWs,
         )
       },
       onStatus: (phase: LoopPhase, meta?: { model: string; busy: boolean }) => {
         rt.phase = phase
         if (meta?.model) rt.model = meta.model
         if (meta?.busy !== undefined) rt.busy = meta.busy
-        send(
-          conn.ws,
+        pushLive(
           createEnvelope(
             'status',
             {
@@ -748,11 +795,11 @@ export async function startServer(
             } satisfies StatusPayload,
             { sessionId },
           ),
+          originWs,
         )
       },
       onMessageCompleted: (args: { messageId: string; stopReason: string }) => {
-        send(
-          conn.ws,
+        pushLive(
           createEnvelope(
             'message.completed',
             {
@@ -761,6 +808,7 @@ export async function startServer(
             },
             { sessionId },
           ),
+          originWs,
         )
       },
     }
@@ -778,23 +826,39 @@ export async function startServer(
     })
       .catch((err: unknown) => {
         if (abort.signal.aborted) {
-          sendError(conn.ws, 'aborted', 'turn aborted', {
-            replyTo: env.id,
-            sessionId,
-          })
+          const abortEnv = createEnvelope(
+            'error',
+            {
+              code: 'aborted' as ErrorCode,
+              message: 'turn aborted',
+              replyTo: env.id,
+            } satisfies ErrorPayload,
+            { sessionId },
+          )
+          pushLive(abortEnv, originWs)
           return
         }
         const msg = err instanceof Error ? err.message : String(err)
         console.error('[server] agent loop error:', msg)
-        sendError(conn.ws, 'upstream', msg, { replyTo: env.id, sessionId })
+        pushLive(
+          createEnvelope(
+            'error',
+            {
+              code: 'upstream' as ErrorCode,
+              message: msg,
+              replyTo: env.id,
+            } satisfies ErrorPayload,
+            { sessionId },
+          ),
+          originWs,
+        )
       })
       .finally(() => {
         rt.busy = false
         rt.phase = 'idle'
         rt.abort = undefined
         rt.loopPromise = undefined
-        send(
-          conn.ws,
+        pushLive(
           createEnvelope(
             'status',
             {
@@ -804,6 +868,7 @@ export async function startServer(
             } satisfies StatusPayload,
             { sessionId },
           ),
+          originWs,
         )
       })
   }

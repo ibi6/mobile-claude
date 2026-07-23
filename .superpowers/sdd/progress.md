@@ -30,3 +30,11 @@ Task 8: complete (commit 5da99df)
 Task 9: complete (commit f6b1a04)
 
 Task 10: complete (feat(mobile): chat streaming and tool cards)
+
+Task 10: complete (commit c3f661c)
+
+Task 11: complete (commit 15c8173)
+
+Task 12: complete (commit a12213b)
+
+Task 13: complete (commit 7c81b6c, docs: quickstart and reconnect permission polish)

@@ -258,6 +258,22 @@ export function ChatScreen({ navigation, route }: Props) {
     }
   }, [applySnapshot, client, connStatus, reconnect, sessionId]);
 
+  // After auto-reconnect (status → authenticated while still focused), re-open
+  // so session.snapshot rehydrates pendingPermission without leaving the screen.
+  const prevConnStatusRef = useRef(connStatus);
+  useEffect(() => {
+    const prev = prevConnStatusRef.current;
+    prevConnStatusRef.current = connStatus;
+    if (
+      prev !== 'authenticated' &&
+      connStatus === 'authenticated' &&
+      client &&
+      sessionId
+    ) {
+      void openSession();
+    }
+  }, [client, connStatus, openSession, sessionId]);
+
   // Subscribe while focused; re-open snapshot on each focus
   useFocusEffect(
     useCallback(() => {
